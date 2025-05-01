@@ -23,11 +23,77 @@ jobs:
         with:
           node-version: '22.x'
 
-      - name: npm install, build, and test
+      - name: npm install and build
         run: |
           npm install
           npm run build --if-present
-          npm run test --if-present
+        env:
+          NEXT_PUBLIC_SANITY_PROJECT_ID: ${{ secrets.NEXT_PUBLIC_SANITY_PROJECT_ID }}
+          NEXT_PUBLIC_SANITY_DATASET: ${{ secrets.NEXT_PUBLIC_SANITY_DATASET }}
+          NEXT_PUBLIC_SANITY_API_VERSION: ${{ secrets.NEXT_PUBLIC_SANITY_API_VERSION }}
+          # Add any other environment variables your app needs
+
+      - name: Create necessary files for Azure deployment
+        run: |
+          # Create web.config file
+          echo '<?xml version="1.0" encoding="utf-8"?>
+          <configuration>
+            <system.webServer>
+              <webSocket enabled="false" />
+              <handlers>
+                <add name="iisnode" path="server.js" verb="*" modules="iisnode" />
+              </handlers>
+              <rewrite>
+                <rules>
+                  <rule name="StaticContent">
+                    <action type="Rewrite" url="public{REQUEST_URI}" />
+                  </rule>
+                  <rule name="DynamicContent">
+                    <conditions>
+                      <add input="{REQUEST_FILENAME}" matchType="IsFile" negate="True" />
+                    </conditions>
+                    <action type="Rewrite" url="server.js" />
+                  </rule>
+                </rules>
+              </rewrite>
+              <security>
+                <requestFiltering removeServerHeader="true" />
+              </security>
+              <httpProtocol>
+                <customHeaders>
+                  <remove name="X-Powered-By" />
+                </customHeaders>
+              </httpProtocol>
+            </system.webServer>
+          </configuration>' > web.config
+
+          # Create server.js file
+          echo 'const { createServer } = require("http");
+          const { parse } = require("url");
+          const next = require("next");
+
+          const dev = process.env.NODE_ENV !== "production";
+          const app = next({ dev });
+          const handle = app.getRequestHandler();
+          const port = process.env.PORT || 8080;
+
+          app.prepare().then(() => {
+            createServer((req, res) => {
+              const parsedUrl = parse(req.url, true);
+              handle(req, res, parsedUrl);
+            }).listen(port, (err) => {
+              if (err) throw err;
+              console.log(`> Ready on http://localhost:${port}`);
+            });
+          });' > server.js
+          
+          # Add start script to package.json if it doesn't exist or doesn't use port 8080
+          if ! grep -q '"start": "next start -p 8080"' package.json; then
+            sed -i 's/"scripts": {/"scripts": {\n    "start": "next start -p 8080",/g' package.json
+          fi
+
+      - name: Test if existing
+        run: npm run test --if-present
 
       - name: Zip artifact for deployment
         run: zip release.zip ./* -r
